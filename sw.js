@@ -1,5 +1,5 @@
 // Houdt de app ook offline beschikbaar. Je eigen gegevens staan niet in deze cache maar in de opslag van je browser.
-const CACHE = 'salaryman-v10';
+const CACHE = 'salaryman-v11';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'og-image.png', 'sitemap.xml'];
 
 self.addEventListener('install', (e) => {

@@ -210,6 +210,13 @@ function parseAmount(s) {
   else if (ld > lc && lc >= 0) s = s.replace(/,/g, '');
   return parseFloat(s);
 }
+// Af of bij? -1 = afgeschreven, 1 = bijgeschreven, 0 = onbekend.
+function cdSign(v) {
+  const s = String(v || '').replace(/["']/g, '').trim().toLowerCase();
+  if (/^(d|af|debet|debit|db|dr)$/.test(s)) return -1;
+  if (/^(c|bij|credit|cr)$/.test(s)) return 1;
+  return 0;
+}
 async function readFile(file) {
   const buf = await file.arrayBuffer();
   let text = new TextDecoder('utf-8').decode(buf);
@@ -270,6 +277,21 @@ function parseBankFile(text, bank) {
       return { needsMapping: true, sample: splitCSV(lines.join('\n'), delim).slice(0, 6), delim, header: hi >= 0 };
     }
   }
+  col = Object.assign({}, col);
+  // Af/Bij-kolom: staat hij er niet (goed) in, zoek hem dan op de inhoud (D/C, Af/Bij, Debet/Credit).
+  {
+    const data = rows.filter(r => r && r.length >= 2 && parseDate(r[col.date]));
+    const hits = (i) => data.filter(r => cdSign(r[i]) !== 0).length;
+    if (data.length && (col.cd < 0 || hits(col.cd) < data.length * 0.7)) {
+      col.cd = -1;
+      const n = Math.max(0, ...data.map(r => r.length));
+      for (let i = 0; i < n; i++) { if (i !== col.amount && i !== col.date && hits(i) >= data.length * 0.7) { col.cd = i; break; } }
+    }
+    // Alleen plusbedragen en geen Af/Bij-kolom? Dan klopt er iets niet: vraag het liever even.
+    if (col.cd < 0 && data.length > 3 && data.every(r => !/-/.test(String(r[col.amount] || '')))) {
+      return { needsMapping: true, sample: splitCSV(lines.join('\n'), delim).slice(0, 6), delim, header: hi >= 0 };
+    }
+  }
   const out = [], seen = {}, accts = {};
   const nameFromDesc = mapping && mapping.nameFromDesc;
   for (const r of rows) {
@@ -278,9 +300,8 @@ function parseBankFile(text, bank) {
     let amount = parseAmount(r[col.amount]);
     if (!date || !isFinite(amount) || amount === 0) continue;
     if (col.cd >= 0) {
-      const cd = (r[col.cd] || '').trim().toLowerCase();
-      if (/^(d|debet|af)$/.test(cd)) amount = -Math.abs(amount);
-      else if (/^(c|credit|bij)$/.test(cd)) amount = Math.abs(amount);
+      const s = cdSign(r[col.cd]);
+      if (s) amount = s * Math.abs(amount);
     }
     const desc = clean(col.desc >= 0 ? r[col.desc] : '');
     let name = clean(col.name >= 0 ? r[col.name] : '');
@@ -319,6 +340,12 @@ function mergeRows(res, bank, added, total, newAcc) {
   for (const [key, last4] of Object.entries(res.accounts)) {
     if (!state.accounts[key]) { state.accounts[key] = { last4, bank, type: 'nieuw', share: 50 }; newAcc++; }
   }
+  // Eerder verkeerd om ingelezen (af als bij)? Dan vervangt de nieuwe regel de oude.
+  const k = (t) => [t.acct, t.date, Math.abs(t.amount).toFixed(2), (t.name || '').toLowerCase(), (t.desc || '').toLowerCase().slice(0, 80)].join('|');
+  const fresh = new Map(res.rows.map(r => [k(r), Math.sign(r.amount)]));
+  const before = state.tx.length;
+  state.tx = state.tx.filter(t => { const s = fresh.get(k(t)); return !(s && s !== Math.sign(t.amount)); });
+  if (state.tx.length < before) ui.fixedSigns = (ui.fixedSigns || 0) + before - state.tx.length;
   const ids = new Set(state.tx.map(t => t.id));
   for (const r of res.rows) if (!ids.has(r.id)) { state.tx.push(r); ids.add(r.id); added++; }
   return { added, total, newAcc };
@@ -331,6 +358,7 @@ function finishImport(added, total, newAcc) {
   if (!state.settings.gameStart) state.settings.gameStart = addMonths(todayKey(), -1);   // vorige maand is je eerste echte ronde
   save();
   ui.month = null; ui.tab = 'spel';
+  if (ui.fixedSigns) { const f = ui.fixedSigns; ui.fixedSigns = 0; toast(`${f} bedragen hersteld: af en bij staan nu goed`); render(); window.scrollTo(0, 0); return; }
   toast(added ? `${added} nieuwe transacties` + (total > added ? `, ${total - added} al bekend` : '') + (newAcc ? ' · vertel me wat voor rekening het is' : '') : 'Geen nieuwe transacties, alles was al bekend');
   render(); window.scrollTo(0, 0);
 }
